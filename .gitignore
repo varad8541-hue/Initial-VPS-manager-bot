@@ -1,0 +1,13 @@
+# Secrets / local state
+.env
+.env.*
+!.env.example
+vps.db
+vps.db-shm
+vps.db-wal
+bot.log
+bot-console.log
+__pycache__/
+*.py[cod]
+.venv/
+venv/
