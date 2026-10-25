@@ -17,6 +17,7 @@ import string
 import re
 import time
 import shutil
+import shlex
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 import requests
@@ -245,7 +246,7 @@ async def run_lxc(cmd: str, node_id: int = 1, timeout: int = 120) -> str:
 
     if node["is_local"]:
         proc = await asyncio.create_subprocess_exec(
-            *full.split(),
+            *shlex.split(full),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
