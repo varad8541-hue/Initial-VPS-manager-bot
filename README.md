@@ -1,55 +1,65 @@
 # VPS Manager Discord Bot
 
-## Important safety notes
-- This bot can create, stop, reinstall, and delete LXC containers. Reinstall/delete actions erase data.
-- Run it only on a server you administer and only with a Discord bot you control.
-- Use a dedicated, unprivileged Linux account where possible; grant only the LXD permissions the bot actually needs.
-- Never commit `.env`, `vps.db`, logs, or bot tokens to GitHub. If a token was exposed, reset it in the Discord Developer Portal.
-- The existing remote-node agent endpoint (`/api/execute`) can run commands on remote nodes. Only configure trusted agents protected by authentication and HTTPS.
+A Discord bot for managing LXC-based VPS provisioning with Pinggy SSH tunnels.
 
-## Setup on Ubuntu/Debian
+## Features
 
-```bash
-chmod +x setup.sh
-./setup.sh
-```
+- **VPS Creation**: Deploy Ubuntu/Debian containers with custom RAM/CPU/disk
+- **SSH Tunnels**: Auto-setup Pinggy tunnels for remote access
+- **Container Management**: Start, stop, reinstall, change passwords
+- **Port Forwarding**: Expose VPS ports to the host
+- **Admin Controls**: User management, suspension, resource quotas
+- **tmate Integration**: One-click shared terminal sessions
 
-The setup script interactively asks for the Discord token, main admin ID, embed image URL, bot name, prefix, developer footer, optional Pinggy token, public IP fallback, and LXD storage pool. It creates a private `.env`, virtual environment, and installs Python dependencies.
+## Setup
 
-Enable **Message Content Intent** (and Server Members Intent if you use member-dependent commands) in the Discord Developer Portal.
+1. Clone the repo:
+   ```bash
+   git clone https://github.com/YOUR_USERNAME/vps-manager-bot.git
+   cd vps-manager-bot
+   ```
 
-Start it:
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-```bash
-.venv/bin/python bot.py
-```
+3. Configure `.env`:
+   ```bash
+   cp .env.example .env
+   # Edit .env with your Discord token, Pinggy token, etc.
+   ```
 
-Quick background run:
+4. Run:
+   ```bash
+   python bot.py
+   ```
 
-```bash
-nohup .venv/bin/python bot.py > bot-console.log 2>&1 &
-```
+## Requirements
 
-Check logs:
-
-```bash
-tail -f bot-console.log
-```
-
-## GitHub push commands
-
-Create an empty repository on GitHub first, then from this project directory:
-
-```bash
-git init
-git add bot.py setup.sh requirements.txt README.md .gitignore .env.example
-git commit -m "Initial VPS manager bot"
-git branch -M main
-git remote add origin https://github.com/YOUR_GITHUB_USERNAME/YOUR_REPOSITORY.git
-git push -u origin main
-```
-
-Replace the remote URL with your repository URL. Do not use `git add .` unless you have verified `.gitignore` is working and `.env` is not staged.
+- Python 3.8+
+- LXD/LXC installed on the host
+- Discord.py
+- Pinggy token (optional, free tier available)
 
 ## Commands
-Default prefix is `!`. Use `!help` in your Discord server for the full command list.
+
+### User
+- `!myvps` – List your VPS
+- `!manage [user]` – Control VPS (start/stop/SSH/reinstall)
+- `!pinggy [n]` – Create SSH tunnel
+- `!ports` – Manage port forwards
+
+### Admin
+- `!create <ram> <cpu> <disk> @user` – Deploy new VPS
+- `!delete-vps @user <n> [reason]`
+- `!suspend-vps <container>`
+- `!unsuspend-vps <container>`
+
+### Main Admin
+- `!admin-add @user`
+- `!admin-remove @user`
+
+## License
+
+MIT
