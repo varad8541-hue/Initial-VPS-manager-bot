@@ -589,6 +589,7 @@ class ManageView(discord.ui.View):
                         await inter.followup.send(embed=dm_emb, ephemeral=True)
                 else:
                     await inter.followup.send(embed=err("Tunnel Failed", "Could not create tunnel"), ephemeral=True)
+                return
             
             elif action == "reinstall":
                 await inter.followup.send(embed=warn("Reinstall", "Coming soon"), ephemeral=True)
