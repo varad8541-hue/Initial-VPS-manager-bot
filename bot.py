@@ -483,7 +483,6 @@ class ManageView(discord.ui.View):
         buttons = [
             ("▶ Start", discord.ButtonStyle.success, "start"),
             ("⏸ Stop", discord.ButtonStyle.secondary, "stop"),
-            ("🔌 Tunnel", discord.ButtonStyle.primary, "tunnel"),
             ("🔐 Change Pass", discord.ButtonStyle.danger, "pass"),
             ("📊 Stats", discord.ButtonStyle.secondary, "stats"),
             ("🔄 Reinstall", discord.ButtonStyle.danger, "reinstall"),
@@ -565,37 +564,7 @@ class ManageView(discord.ui.View):
                 except Exception as e:
                     await inter.followup.send(embed=err("Stats", "Could not retrieve stats"), ephemeral=True)
             
-            elif action == "tunnel":
-                try:
-                    await inter.followup.send(embed=info("Creating Tunnel", "Setting up Pinggy SSH tunnel..."), ephemeral=True)
-                except:
-                    pass
-                
-                addr = await establish_pinggy(container)
-                if addr:
-                    h, p = addr.split(":")
-                    pw = v.get("root_password", "?")
-                    
-                    dm_emb = ok("SSH Tunnel Ready", container)
-                    dm_emb.add_field(name="Login", value=(
-                        f"**Host:** `{h}`\n"
-                        f"**Port:** `{p}`\n"
-                        f"**User:** `root`\n"
-                        f"**Password:** `{pw}`\n\n"
-                        f"```ssh root@{h} -p {p}```"
-                    ), inline=False)
-                    
-                    try:
-                        await inter.user.send(embed=dm_emb)
-                    except:
-                        pass
-                else:
-                    try:
-                        await inter.followup.send(embed=err("Tunnel timeout", "Tunnel setup taking too long. Try again."), ephemeral=True)
-                    except:
-                        pass
-                return
-            
+
             elif action == "reinstall":
                 await inter.followup.send(embed=warn("Reinstall", "Coming soon"), ephemeral=True)
             
