@@ -51,16 +51,13 @@ else
     echo "✓ Virtual environment already exists"
 fi
 
-# Activate venv
-source .venv/bin/activate
-
 echo ""
 echo "================================"
 echo "Installing dependencies..."
 echo "================================"
 
-pip install --upgrade pip setuptools wheel -q
-pip install -r requirements.txt
+.venv/bin/pip install --upgrade pip setuptools wheel -q
+.venv/bin/pip install -r requirements.txt
 
 echo "✓ Dependencies installed"
 
@@ -92,10 +89,10 @@ echo "================================"
 echo "Setup complete!"
 echo "================================"
 echo ""
-echo "To start the bot:"
-echo "  source .venv/bin/activate"
-echo "  python3 bot.py"
+echo "To start the bot, use:"
 echo ""
-echo "Or run directly:"
-echo "  .venv/bin/python bot.py"
+echo "  cd \"/root/Initial-VPS-manager-bot\" && .venv/bin/python bot.py"
+echo ""
+echo "Or for background (systemd):"
+echo "  sudo systemctl start vps-bot"
 echo ""
