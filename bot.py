@@ -49,6 +49,10 @@ BOT_VERSION = "4.0"
 BOT_DEVELOPER = os.getenv("BOT_DEVELOPER", "Unknown")
 MAIN_ADMIN_IDS = [uid.strip() for uid in os.getenv("MAIN_ADMIN_ID", "").split(",") if uid.strip()]
 DEFAULT_POOL = os.getenv("DEFAULT_STORAGE_POOL", "default")
+PINGGY_TOKEN = os.getenv("PINGGY_TOKEN", "")
+
+PINGGY_LOG = "/root/.pinggy.log"
+ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 OS_OPTIONS = [
     {"label": "Ubuntu 20.04 LTS", "value": "ubuntu:20.04"},
@@ -217,9 +221,11 @@ async def setup_ssh(container: str) -> str:
     password = generate_password()
     cmds = [
         "apt-get update -y",
-        "apt-get install -y openssh-server",
+        "apt-get install -y openssh-server ssh",
         f"echo 'root:{password}' | chpasswd",
         "sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config",
+        "sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config",
+        "mkdir -p /run/sshd",
         "systemctl restart ssh || service ssh restart || true",
     ]
     
@@ -231,6 +237,61 @@ async def setup_ssh(container: str) -> str:
     
     log.info(f"[SSH] {container} ready")
     return password
+
+def parse_pinggy(text: str) -> Optional[str]:
+    """Extract Pinggy address from output"""
+    if not text:
+        return None
+    clean = ANSI_RE.sub("", text)
+    m = re.search(r"tcp://([a-zA-Z0-9.\-]+):(\d+)", clean, re.I)
+    if m:
+        return f"{m.group(1)}:{m.group(2)}"
+    return None
+
+async def establish_pinggy(container: str) -> Optional[str]:
+    """Set up Pinggy SSH tunnel"""
+    # Ensure SSH is running
+    try:
+        await run_lxc(f"exec {container} -- bash -c \"service ssh start || systemctl start ssh || true\"")
+    except:
+        pass
+    
+    # Kill old tunnel
+    try:
+        await run_lxc(f"exec {container} -- bash -c \"pkill -9 -f pinggy.io; rm -f {PINGGY_LOG}\"")
+    except:
+        pass
+    
+    user = f"{PINGGY_TOKEN}+tcp" if PINGGY_TOKEN else "qr+tcp"
+    host = "a.pinggy.io" if PINGGY_TOKEN else "free.pinggy.io"
+    
+    tunnel = (
+        f"setsid nohup ssh -p 443 -T "
+        f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+        f"-o ServerAliveInterval=15 -o ExitOnForwardFailure=yes "
+        f"-R0:localhost:22 {user}@{host} "
+        f"> {PINGGY_LOG} 2>&1 < /dev/null & disown"
+    )
+    
+    try:
+        await run_lxc(f"exec {container} -- bash -c \"{tunnel}\"")
+    except Exception as e:
+        log.error(f"[Pinggy] Start failed: {e}")
+        return None
+    
+    # Wait for tunnel to establish
+    for _ in range(6):
+        await asyncio.sleep(4)
+        try:
+            log_out = await run_lxc(f"exec {container} -- cat {PINGGY_LOG}")
+            addr = parse_pinggy(log_out if isinstance(log_out, str) else "")
+            if addr:
+                log.info(f"[Pinggy] Ready: {addr}")
+                return addr
+        except Exception:
+            pass
+    
+    return None
 
 # ═══════════════════════════════════════════════════════════════════════════
 # EMBEDS
@@ -328,6 +389,13 @@ class OSSelect(discord.ui.View):
         try:
             log.info(f"[CREATE] {container} for {self.user} ({user_id})")
             
+            # Clean up if it exists
+            try:
+                await run_lxc(f"delete {container} --force")
+                log.info(f"[CREATE] Cleaned up orphaned container {container}")
+            except:
+                pass
+            
             await run_lxc(f"init {os_ver} {container} -s {DEFAULT_POOL}", timeout=180)
             await run_lxc(f"config set {container} limits.memory {self.ram*1024}MB")
             await run_lxc(f"config set {container} limits.cpu {self.cpu}")
@@ -337,6 +405,7 @@ class OSSelect(discord.ui.View):
             await asyncio.sleep(5)
             
             password = await setup_ssh(container)
+            addr = await establish_pinggy(container)
             
             vps = {
                 "user_id": user_id,
@@ -359,17 +428,22 @@ class OSSelect(discord.ui.View):
             
             await inter.followup.send(embed=emb)
             
-            # DM password privately
-            try:
-                dm_emb = ok("VPS Password - Keep Safe!", container)
-                dm_emb.add_field(name="Password", value=f"```{password}```", inline=False)
-                dm_emb.add_field(name="SSH Command", value=f"`ssh root@{container}.local`", inline=False)
-                await self.user.send(embed=dm_emb)
-            except:
-                pass
+            dm_emb = ok("VPS Password - Keep Safe!", container)
+            dm_emb.add_field(name="Password", value=f"```{password}```", inline=False)
+            if addr:
+                h, p = addr.split(":")
+                dm_emb.add_field(name="SSH Tunnel", value=f"```ssh root@{h} -p {p}```", inline=False)
+            else:
+                dm_emb.add_field(name="Note", value=f"Use `{PREFIX}manage` → Tunnel to create SSH tunnel", inline=False)
+            await self.user.send(embed=dm_emb)
             
         except Exception as e:
             log.error(f"[CREATE] Failed: {e}")
+            # Clean up on failure
+            try:
+                await run_lxc(f"delete {container} --force")
+            except:
+                pass
             await inter.followup.send(embed=err("Create Failed", str(e)[:400]))
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -410,6 +484,7 @@ class ManageView(discord.ui.View):
         buttons = [
             ("▶ Start", discord.ButtonStyle.success, "start"),
             ("⏸ Stop", discord.ButtonStyle.secondary, "stop"),
+            ("🔌 Tunnel", discord.ButtonStyle.primary, "tunnel"),
             ("🔐 Change Pass", discord.ButtonStyle.danger, "pass"),
             ("📊 Stats", discord.ButtonStyle.secondary, "stats"),
             ("🔄 Reinstall", discord.ButtonStyle.danger, "reinstall"),
@@ -490,6 +565,31 @@ class ManageView(discord.ui.View):
                     await inter.followup.send(embed=info("Stats", f"`{container}`\n{status_line}"), ephemeral=True)
                 except Exception as e:
                     await inter.followup.send(embed=err("Stats", "Could not retrieve stats"), ephemeral=True)
+            
+            elif action == "tunnel":
+                await inter.response.edit_message(embed=info("Tunnel", "Creating Pinggy SSH tunnel..."), view=None)
+                addr = await establish_pinggy(container)
+                if addr:
+                    h, p = addr.split(":")
+                    pw = v.get("root_password", "?")
+                    
+                    dm_emb = ok("SSH Tunnel Ready", container)
+                    dm_emb.add_field(name="Login", value=(
+                        f"**Host:** `{h}`\n"
+                        f"**Port:** `{p}`\n"
+                        f"**User:** `root`\n"
+                        f"**Password:** `{pw}`\n\n"
+                        f"```ssh root@{h} -p {p}```"
+                    ), inline=False)
+                    
+                    try:
+                        await inter.user.send(embed=dm_emb)
+                        await inter.followup.send(embed=ok("Tunnel Ready", "Check DMs for details"), ephemeral=True)
+                    except:
+                        await inter.followup.send(embed=dm_emb, ephemeral=True)
+                else:
+                    await inter.followup.send(embed=err("Tunnel Failed", "Could not create tunnel"), ephemeral=True)
+                return
             
             elif action == "reinstall":
                 await inter.followup.send(embed=warn("Reinstall", "Feature coming soon"), ephemeral=True)
