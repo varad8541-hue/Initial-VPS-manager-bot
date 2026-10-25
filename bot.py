@@ -301,7 +301,7 @@ def make_embed(title: str, description: str = "", color: int = 0x1a1a1a) -> disc
         title=f"✦ {COMPANY_NAME} · {title}",
         description=description[:4090],
         color=color,
-        timestamp=datetime.utcnow()
+        timestamp=datetime.now()
     )
     if COMPANY_ICON:
         emb.set_thumbnail(url=COMPANY_ICON)
@@ -389,13 +389,20 @@ class OSSelect(discord.ui.View):
         try:
             log.info(f"[CREATE] {container} for {self.user} ({user_id})")
             
-            # Clean up if it exists
+            # Wait before attempting creation
+            await asyncio.sleep(2)
+            
+            # Try to clean up if exists
             try:
                 await run_lxc(f"delete {container} --force")
                 log.info(f"[CREATE] Cleaned up orphaned container {container}")
-            except:
-                pass
+                await asyncio.sleep(2)
+            except Exception as ce:
+                if "doesn't exist" not in str(ce).lower():
+                    log.warning(f"[CREATE] No cleanup needed or failed: {ce}")
             
+            # Wait and init
+            await asyncio.sleep(1)
             await run_lxc(f"init {os_ver} {container} -s {DEFAULT_POOL}", timeout=180)
             await run_lxc(f"config set {container} limits.memory {self.ram*1024}MB")
             await run_lxc(f"config set {container} limits.cpu {self.cpu}")
