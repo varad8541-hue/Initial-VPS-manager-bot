@@ -574,6 +574,7 @@ class ManageView(discord.ui.View):
                     await inter.followup.send(embed=err("Stats", "Could not retrieve stats"), ephemeral=True)
             
             elif action == "tunnel":
+                await inter.followup.send(embed=info("Tunnel", "Creating Pinggy SSH tunnel..."), ephemeral=True)
                 addr = await establish_pinggy(container)
                 if addr:
                     h, p = addr.split(":")
