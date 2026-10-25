@@ -218,19 +218,18 @@ async def setup_ssh(container: str) -> str:
     password = generate_password()
     cmds = [
         "apt-get update -y",
-        "apt-get install -y openssh-server ssh",
+        "apt-get install -y openssh-server openssh-client",
         f"echo 'root:{password}' | chpasswd",
-        "sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config",
-        "sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config",
+        "mkdir -p /etc/ssh",
         "mkdir -p /run/sshd",
-        "systemctl restart ssh || service ssh restart || true",
+        "service ssh start || systemctl start ssh || /usr/sbin/sshd || true",
     ]
     
     for cmd in cmds:
         try:
             await run_lxc(f"exec {container} -- bash -c \"{cmd}\"", timeout=180)
         except Exception as e:
-            log.warning(f"[SSH] Setup step failed: {e}")
+            log.warning(f"[SSH] Step failed: {e}")
     
     log.info(f"[SSH] {container} ready")
     return password
@@ -567,6 +566,11 @@ class ManageView(discord.ui.View):
                     await inter.followup.send(embed=err("Stats", "Could not retrieve stats"), ephemeral=True)
             
             elif action == "tunnel":
+                try:
+                    await inter.followup.send(embed=info("Creating Tunnel", "Setting up Pinggy SSH tunnel..."), ephemeral=True)
+                except:
+                    pass
+                
                 addr = await establish_pinggy(container)
                 if addr:
                     h, p = addr.split(":")
@@ -583,12 +587,13 @@ class ManageView(discord.ui.View):
                     
                     try:
                         await inter.user.send(embed=dm_emb)
-                        await inter.followup.send(embed=ok("Tunnel Ready", "Check your DMs"), ephemeral=True)
-                    except Exception as te:
-                        log.error(f"Tunnel DM error: {te}")
-                        await inter.followup.send(embed=dm_emb, ephemeral=True)
+                    except:
+                        pass
                 else:
-                    await inter.followup.send(embed=err("Tunnel Failed", "Could not create tunnel"), ephemeral=True)
+                    try:
+                        await inter.followup.send(embed=err("Tunnel timeout", "Tunnel setup taking too long. Try again."), ephemeral=True)
+                    except:
+                        pass
                 return
             
             elif action == "reinstall":
