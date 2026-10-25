@@ -380,7 +380,7 @@ class OSSelect(discord.ui.View):
             return
         
         os_ver = inter.data["values"][0]
-        await inter.response.edit_message(embed=info("Creating…", f"Deploying {os_ver}…"), view=None)
+        await inter.response.defer(thinking=False)
         
         user_id = str(self.user.id)
         count = len(get_user_vps(user_id)) + 1
@@ -574,7 +574,6 @@ class ManageView(discord.ui.View):
                     await inter.followup.send(embed=err("Stats", "Could not retrieve stats"), ephemeral=True)
             
             elif action == "tunnel":
-                await inter.response.edit_message(embed=info("Tunnel", "Creating Pinggy SSH tunnel..."), view=None)
                 addr = await establish_pinggy(container)
                 if addr:
                     h, p = addr.split(":")
@@ -596,7 +595,6 @@ class ManageView(discord.ui.View):
                         await inter.followup.send(embed=dm_emb, ephemeral=True)
                 else:
                     await inter.followup.send(embed=err("Tunnel Failed", "Could not create tunnel"), ephemeral=True)
-                return
             
             elif action == "reinstall":
                 await inter.followup.send(embed=warn("Reinstall", "Feature coming soon"), ephemeral=True)
