@@ -245,46 +245,63 @@ def parse_pinggy(text: str) -> Optional[str]:
     return None
 
 async def establish_pinggy(container: str) -> Optional[str]:
-    """Set up Pinggy SSH tunnel"""
+    """Set up Pinggy SSH tunnel on HOST pointing to container"""
     try:
-        await run_lxc(f"exec {container} -- bash -c \"service ssh start || systemctl start ssh || true\"")
-    except:
-        pass
-    
-    try:
-        await run_lxc(f"exec {container} -- bash -c \"pkill -9 -f pinggy.io; rm -f {PINGGY_LOG}\"")
-    except:
-        pass
-    
-    user = f"{PINGGY_TOKEN}+tcp" if PINGGY_TOKEN else "qr+tcp"
-    host = "a.pinggy.io" if PINGGY_TOKEN else "free.pinggy.io"
-    
-    tunnel = (
-        f"setsid nohup ssh -p 443 -T "
-        f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-        f"-o ServerAliveInterval=15 -o ExitOnForwardFailure=yes "
-        f"-R0:localhost:22 {user}@{host} "
-        f"> {PINGGY_LOG} 2>&1 < /dev/null & disown"
-    )
-    
-    try:
-        await run_lxc(f"exec {container} -- bash -c \"{tunnel}\"")
-    except Exception as e:
-        log.error(f"[Pinggy] Start failed: {e}")
+        # Find container IP
+        info = await run_lxc(f"list {container} --format json")
+        import json
+        containers = json.loads(info)
+        container_ip = None
+        for c in containers:
+            if c.get("name") == container:
+                for net in c.get("state", {}).get("network", {}).values():
+                    for addr in net.get("addresses", []):
+                        if addr.get("family") == "inet":
+                            container_ip = addr.get("address")
+                            break
+        
+        if not container_ip:
+            log.error(f"[Pinggy] Could not find container IP")
+            return None
+        
+        log.info(f"[Pinggy] Found container IP: {container_ip}")
+        
+        # Kill old tunnel on host
+        os.system(f"pkill -9 -f 'ssh.*{container}'")
+        await asyncio.sleep(1)
+        
+        user = f"{PINGGY_TOKEN}+tcp" if PINGGY_TOKEN else "qr+tcp"
+        host = "a.pinggy.io" if PINGGY_TOKEN else "free.pinggy.io"
+        
+        # Create Pinggy tunnel on HOST
+        tunnel = (
+            f"setsid nohup ssh -p 443 -T "
+            f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            f"-o ServerAliveInterval=15 -o ExitOnForwardFailure=yes "
+            f"-R0:localhost:22 {user}@{host} "
+            f"> /tmp/pinggy-{container}.log 2>&1 < /dev/null & disown"
+        )
+        
+        os.system(tunnel)
+        log.info(f"[Pinggy] Tunnel started for {container}")
+        
+        # Wait for tunnel to establish
+        for _ in range(6):
+            await asyncio.sleep(4)
+            try:
+                with open(f"/tmp/pinggy-{container}.log", "r") as f:
+                    log_out = f.read()
+                addr = parse_pinggy(log_out)
+                if addr:
+                    log.info(f"[Pinggy] Ready: {addr}")
+                    return addr
+            except Exception:
+                pass
+        
         return None
-    
-    for _ in range(6):
-        await asyncio.sleep(4)
-        try:
-            log_out = await run_lxc(f"exec {container} -- cat {PINGGY_LOG}")
-            addr = parse_pinggy(log_out if isinstance(log_out, str) else "")
-            if addr:
-                log.info(f"[Pinggy] Ready: {addr}")
-                return addr
-        except Exception:
-            pass
-    
-    return None
+    except Exception as e:
+        log.error(f"[Pinggy] Exception: {e}")
+        return None
 
 # ═══════════════════════════════════════════════════════════════════════════
 # EMBEDS
