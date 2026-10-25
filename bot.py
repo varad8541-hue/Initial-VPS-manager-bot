@@ -45,7 +45,7 @@ BOT_NAME = os.getenv("BOT_NAME", "VPS-Manager")
 COMPANY_NAME = os.getenv("COMPANY_NAME", "Chaudhary Nodes")
 COMPANY_ICON = os.getenv("COMPANY_ICON", "")
 PREFIX = os.getenv("PREFIX", "!")
-BOT_VERSION = "4.0"
+BOT_VERSION = "4.1"
 BOT_DEVELOPER = os.getenv("BOT_DEVELOPER", "Unknown")
 MAIN_ADMIN_IDS = [uid.strip() for uid in os.getenv("MAIN_ADMIN_ID", "").split(",") if uid.strip()]
 DEFAULT_POOL = os.getenv("DEFAULT_STORAGE_POOL", "default")
@@ -173,7 +173,7 @@ def generate_password(length: int = 16) -> str:
     return "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(length))
 
 # ═══════════════════════════════════════════════════════════════════════════
-# LXC RUNNER - CRITICAL FIX
+# LXC RUNNER
 # ═══════════════════════════════════════════════════════════════════════════
 async def run_lxc(cmd: str, timeout: int = 120) -> str:
     """Run an LXC command with proper parsing using shlex"""
@@ -181,7 +181,6 @@ async def run_lxc(cmd: str, timeout: int = 120) -> str:
     log.info(f"[LXC] {full_cmd}")
     
     args = shlex.split(full_cmd)
-    log.debug(f"[LXC] Parsed args: {args}")
     
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -195,16 +194,14 @@ async def run_lxc(cmd: str, timeout: int = 120) -> str:
         except asyncio.TimeoutError:
             proc.kill()
             log.error(f"[LXC] Command timed out after {timeout}s")
-            raise Exception(f"LXC command timed out: {full_cmd}")
+            raise Exception(f"LXC command timed out")
         
         if proc.returncode != 0:
             err_msg = stderr.decode().strip() or "unknown error"
             log.error(f"[LXC] Failed: {err_msg}")
             raise Exception(f"LXC error: {err_msg}")
         
-        result = stdout.decode().strip()
-        log.debug(f"[LXC] Success")
-        return result
+        return stdout.decode().strip()
     except Exception as e:
         log.error(f"[LXC] Exception: {e}")
         raise
@@ -250,13 +247,11 @@ def parse_pinggy(text: str) -> Optional[str]:
 
 async def establish_pinggy(container: str) -> Optional[str]:
     """Set up Pinggy SSH tunnel"""
-    # Ensure SSH is running
     try:
         await run_lxc(f"exec {container} -- bash -c \"service ssh start || systemctl start ssh || true\"")
     except:
         pass
     
-    # Kill old tunnel
     try:
         await run_lxc(f"exec {container} -- bash -c \"pkill -9 -f pinggy.io; rm -f {PINGGY_LOG}\"")
     except:
@@ -279,7 +274,6 @@ async def establish_pinggy(container: str) -> Optional[str]:
         log.error(f"[Pinggy] Start failed: {e}")
         return None
     
-    # Wait for tunnel to establish
     for _ in range(6):
         await asyncio.sleep(4)
         try:
@@ -380,7 +374,7 @@ class OSSelect(discord.ui.View):
             return
         
         os_ver = inter.data["values"][0]
-        await inter.response.defer(thinking=False)
+        await inter.response.defer()
         
         user_id = str(self.user.id)
         count = len(get_user_vps(user_id)) + 1
@@ -389,19 +383,16 @@ class OSSelect(discord.ui.View):
         try:
             log.info(f"[CREATE] {container} for {self.user} ({user_id})")
             
-            # Wait before attempting creation
             await asyncio.sleep(2)
             
-            # Try to clean up if exists
             try:
                 await run_lxc(f"delete {container} --force")
                 log.info(f"[CREATE] Cleaned up orphaned container {container}")
                 await asyncio.sleep(2)
             except Exception as ce:
                 if "doesn't exist" not in str(ce).lower():
-                    log.warning(f"[CREATE] No cleanup needed or failed: {ce}")
+                    log.warning(f"[CREATE] No cleanup needed: {ce}")
             
-            # Wait and init
             await asyncio.sleep(1)
             await run_lxc(f"init {os_ver} {container} -s {DEFAULT_POOL}", timeout=180)
             await run_lxc(f"config set {container} limits.memory {self.ram*1024}MB")
@@ -442,11 +433,13 @@ class OSSelect(discord.ui.View):
                 dm_emb.add_field(name="SSH Tunnel", value=f"```ssh root@{h} -p {p}```", inline=False)
             else:
                 dm_emb.add_field(name="Note", value=f"Use `{PREFIX}manage` → Tunnel to create SSH tunnel", inline=False)
-            await self.user.send(embed=dm_emb)
+            try:
+                await self.user.send(embed=dm_emb)
+            except:
+                pass
             
         except Exception as e:
             log.error(f"[CREATE] Failed: {e}")
-            # Clean up on failure
             try:
                 await run_lxc(f"delete {container} --force")
             except:
@@ -561,9 +554,9 @@ class ManageView(discord.ui.View):
                 dm_emb.add_field(name="New Password", value=f"```{new_pass}```", inline=False)
                 try:
                     await inter.user.send(embed=dm_emb)
-                    await inter.followup.send(embed=ok("Changed", "Check your DMs for new password"), ephemeral=True)
+                    await inter.followup.send(embed=ok("Changed", "Check your DMs"), ephemeral=True)
                 except:
-                    await inter.followup.send(embed=ok("New Password", f"```{new_pass}```"), ephemeral=True)
+                    await inter.followup.send(embed=ok("Password Changed", f"```{new_pass}```"), ephemeral=True)
             
             elif action == "stats":
                 try:
@@ -574,7 +567,6 @@ class ManageView(discord.ui.View):
                     await inter.followup.send(embed=err("Stats", "Could not retrieve stats"), ephemeral=True)
             
             elif action == "tunnel":
-                await inter.followup.send(embed=info("Tunnel", "Creating Pinggy SSH tunnel..."), ephemeral=True)
                 addr = await establish_pinggy(container)
                 if addr:
                     h, p = addr.split(":")
@@ -591,14 +583,15 @@ class ManageView(discord.ui.View):
                     
                     try:
                         await inter.user.send(embed=dm_emb)
-                        await inter.followup.send(embed=ok("Tunnel Ready", "Check DMs for details"), ephemeral=True)
-                    except:
+                        await inter.followup.send(embed=ok("Tunnel Ready", "Check your DMs"), ephemeral=True)
+                    except Exception as te:
+                        log.error(f"Tunnel DM error: {te}")
                         await inter.followup.send(embed=dm_emb, ephemeral=True)
                 else:
                     await inter.followup.send(embed=err("Tunnel Failed", "Could not create tunnel"), ephemeral=True)
             
             elif action == "reinstall":
-                await inter.followup.send(embed=warn("Reinstall", "Feature coming soon"), ephemeral=True)
+                await inter.followup.send(embed=warn("Reinstall", "Coming soon"), ephemeral=True)
             
             emb = self.build_embed()
             await inter.message.edit(embed=emb, view=self)
@@ -666,7 +659,7 @@ async def cmd_create(ctx, ram: int, cpu: int, disk: int, user: discord.Member):
         await ctx.send(embed=err("Invalid", "RAM/CPU/Disk must be ≥ 1"))
         return
     
-    emb = info("Choose OS", f"Creating {ram}GB / {cpu} CPU / {disk}GB for {user.mention}")
+    emb = info("Choose OS", f"Creating {ram}GB / {cpu} CPU / {disk}GB for {user.mention}\n\nSelect an OS below...")
     await ctx.send(embed=emb, view=OSSelect(ram, cpu, disk, user, ctx))
 
 @bot.command(name="start")
