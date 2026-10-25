@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-VPS Manager Discord Bot v3 - Clean rewrite with logging
+VPS Manager Discord Bot v4 - Professional UI with OS selection
 """
 
 import discord
@@ -42,13 +42,23 @@ log = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════════════════
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 BOT_NAME = os.getenv("BOT_NAME", "VPS-Manager")
+COMPANY_NAME = os.getenv("COMPANY_NAME", "Chaudhary Nodes")
+COMPANY_ICON = os.getenv("COMPANY_ICON", "")
 PREFIX = os.getenv("PREFIX", "!")
-BOT_VERSION = "3.0"
+BOT_VERSION = "4.0"
 BOT_DEVELOPER = os.getenv("BOT_DEVELOPER", "Unknown")
 MAIN_ADMIN_IDS = [uid.strip() for uid in os.getenv("MAIN_ADMIN_ID", "").split(",") if uid.strip()]
 DEFAULT_POOL = os.getenv("DEFAULT_STORAGE_POOL", "default")
 
-log.info(f"Bot: {BOT_NAME} v{BOT_VERSION} | Dev: {BOT_DEVELOPER}")
+OS_OPTIONS = [
+    {"label": "Ubuntu 20.04 LTS", "value": "ubuntu:20.04"},
+    {"label": "Ubuntu 22.04 LTS", "value": "ubuntu:22.04"},
+    {"label": "Ubuntu 24.04 LTS", "value": "ubuntu:24.04"},
+    {"label": "Debian 11 (Bullseye)", "value": "images:debian/11"},
+    {"label": "Debian 12 (Bookworm)", "value": "images:debian/12"},
+]
+
+log.info(f"Bot: {BOT_NAME} v{BOT_VERSION} | Company: {COMPANY_NAME}")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # DATABASE
@@ -82,7 +92,7 @@ def init_db():
     c.execute("SELECT COUNT(*) FROM nodes WHERE is_local=1")
     if c.fetchone()[0] == 0:
         c.execute("INSERT INTO nodes (name, location, total_vps, is_local) VALUES (?,?,?,1)",
-                  ("Local", "Local", 100))
+                  ("Local Node", "Local", 100))
     
     c.execute("""CREATE TABLE IF NOT EXISTS vps (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -166,7 +176,6 @@ async def run_lxc(cmd: str, timeout: int = 120) -> str:
     full_cmd = f"lxc {cmd}"
     log.info(f"[LXC] {full_cmd}")
     
-    # CRITICAL: Use shlex.split to properly handle flags like "-s default"
     args = shlex.split(full_cmd)
     log.debug(f"[LXC] Parsed args: {args}")
     
@@ -190,7 +199,7 @@ async def run_lxc(cmd: str, timeout: int = 120) -> str:
             raise Exception(f"LXC error: {err_msg}")
         
         result = stdout.decode().strip()
-        log.debug(f"[LXC] Success: {result[:100]}")
+        log.debug(f"[LXC] Success")
         return result
     except Exception as e:
         log.error(f"[LXC] Exception: {e}")
@@ -220,7 +229,7 @@ async def setup_ssh(container: str) -> str:
         except Exception as e:
             log.warning(f"[SSH] Setup step failed: {e}")
     
-    log.info(f"[SSH] {container} ready with password {password[:4]}****")
+    log.info(f"[SSH] {container} ready")
     return password
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -228,12 +237,14 @@ async def setup_ssh(container: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 def make_embed(title: str, description: str = "", color: int = 0x1a1a1a) -> discord.Embed:
     emb = discord.Embed(
-        title=f"✦ {BOT_NAME} · {title}",
+        title=f"✦ {COMPANY_NAME} · {title}",
         description=description[:4090],
         color=color,
         timestamp=datetime.utcnow()
     )
-    emb.set_footer(text=f"{BOT_NAME} v{BOT_VERSION} · {BOT_DEVELOPER}")
+    if COMPANY_ICON:
+        emb.set_thumbnail(url=COMPANY_ICON)
+    emb.set_footer(text=f"{BOT_NAME} v{BOT_VERSION} · {COMPANY_NAME}")
     return emb
 
 def ok(title, desc=""):   return make_embed(title, desc, 0x00ff88)
@@ -270,7 +281,7 @@ def main_admin_only():
 async def on_ready():
     log.info(f"✓ Bot logged in as {bot.user} ({bot.user.id})")
     await bot.change_presence(activity=discord.Activity(
-        type=discord.ActivityType.watching, name=f"{BOT_NAME} VPS"
+        type=discord.ActivityType.watching, name=f"{COMPANY_NAME} VPS"
     ))
 
 @bot.event
@@ -284,6 +295,211 @@ async def on_command_error(ctx, error):
     else:
         log.error(f"Command error: {error}")
         await ctx.send(embed=err("Error", str(error)[:500]))
+
+# ═══════════════════════════════════════════════════════════════════════════
+# OS SELECT VIEW
+# ═══════════════════════════════════════════════════════════════════════════
+class OSSelect(discord.ui.View):
+    def __init__(self, ram: int, cpu: int, disk: int, user: discord.Member, ctx):
+        super().__init__(timeout=120)
+        self.ram = ram
+        self.cpu = cpu
+        self.disk = disk
+        self.user = user
+        self.ctx = ctx
+        
+        opts = [discord.SelectOption(label=o["label"], value=o["value"]) for o in OS_OPTIONS]
+        sel = discord.ui.Select(placeholder="Select OS", options=opts)
+        sel.callback = self.on_os_select
+        self.add_item(sel)
+    
+    async def on_os_select(self, inter: discord.Interaction):
+        if inter.user.id != self.ctx.author.id:
+            await inter.response.send_message(embed=err("Not yours"), ephemeral=True)
+            return
+        
+        os_ver = inter.data["values"][0]
+        await inter.response.edit_message(embed=info("Creating…", f"Deploying {os_ver}…"), view=None)
+        
+        user_id = str(self.user.id)
+        count = len(get_user_vps(user_id)) + 1
+        container = f"vps-{user_id[-6:]}-{count}"
+        
+        try:
+            log.info(f"[CREATE] {container} for {self.user} ({user_id})")
+            
+            await run_lxc(f"init {os_ver} {container} -s {DEFAULT_POOL}", timeout=180)
+            await run_lxc(f"config set {container} limits.memory {self.ram*1024}MB")
+            await run_lxc(f"config set {container} limits.cpu {self.cpu}")
+            await run_lxc(f"config device set {container} root size={self.disk}GB")
+            
+            await safe_start(container)
+            await asyncio.sleep(5)
+            
+            password = await setup_ssh(container)
+            
+            vps = {
+                "user_id": user_id,
+                "container_name": container,
+                "ram": f"{self.ram}GB",
+                "cpu": str(self.cpu),
+                "storage": f"{self.disk}GB",
+                "config": f"{self.ram}GB RAM / {self.cpu} CPU / {self.disk}GB disk",
+                "os_version": os_ver,
+                "status": "running",
+                "root_password": password,
+            }
+            save_vps(vps)
+            
+            emb = ok("VPS Created", f"`{container}`")
+            emb.add_field(name="Configuration", value=vps["config"], inline=False)
+            emb.add_field(name="OS", value=os_ver, inline=True)
+            emb.add_field(name="Status", value="🟢 RUNNING", inline=True)
+            emb.add_field(name="Next", value=f"Use `{PREFIX}manage` to view your VPS", inline=False)
+            
+            await inter.followup.send(embed=emb)
+            
+            # DM password privately
+            try:
+                dm_emb = ok("VPS Password - Keep Safe!", container)
+                dm_emb.add_field(name="Password", value=f"```{password}```", inline=False)
+                dm_emb.add_field(name="SSH Command", value=f"`ssh root@{container}.local`", inline=False)
+                await self.user.send(embed=dm_emb)
+            except:
+                pass
+            
+        except Exception as e:
+            log.error(f"[CREATE] Failed: {e}")
+            await inter.followup.send(embed=err("Create Failed", str(e)[:400]))
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MANAGE VIEW
+# ═══════════════════════════════════════════════════════════════════════════
+class ManageView(discord.ui.View):
+    def __init__(self, owner_id: str, vps_list: List[Dict]):
+        super().__init__(timeout=180)
+        self.owner_id = owner_id
+        self.vps_list = vps_list
+        self.idx = 0 if len(vps_list) == 1 else None
+        
+        if len(vps_list) > 1:
+            opts = [
+                discord.SelectOption(
+                    label=f"VPS #{i+1} · {v['container_name']}",
+                    description=v['config'][:50],
+                    value=str(i)
+                ) for i, v in enumerate(vps_list)
+            ]
+            sel = discord.ui.Select(placeholder="Select VPS", options=opts)
+            sel.callback = self.on_select
+            self.add_item(sel)
+        else:
+            self.add_control_buttons()
+    
+    async def on_select(self, inter: discord.Interaction):
+        if str(inter.user.id) != self.owner_id:
+            await inter.response.send_message(embed=err("Not yours"), ephemeral=True)
+            return
+        self.idx = int(inter.data["values"][0])
+        self.clear_items()
+        self.add_control_buttons()
+        emb = self.build_embed()
+        await inter.response.edit_message(embed=emb, view=self)
+    
+    def add_control_buttons(self):
+        buttons = [
+            ("▶ Start", discord.ButtonStyle.success, "start"),
+            ("⏸ Stop", discord.ButtonStyle.secondary, "stop"),
+            ("🔐 Change Pass", discord.ButtonStyle.danger, "pass"),
+            ("📊 Stats", discord.ButtonStyle.secondary, "stats"),
+            ("🔄 Reinstall", discord.ButtonStyle.danger, "reinstall"),
+        ]
+        for label, style, action in buttons:
+            btn = discord.ui.Button(label=label, style=style)
+            btn.callback = lambda i, a=action: self.on_action(i, a)
+            self.add_item(btn)
+    
+    def build_embed(self) -> discord.Embed:
+        v = self.vps_list[self.idx]
+        status = "⛔ SUSPENDED" if v["suspended"] else v["status"].upper()
+        color = 0x00ff88 if v["status"] == "running" and not v["suspended"] else 0xff3366
+        
+        emb = make_embed(f"VPS Management - {v['container_name']}", color=color)
+        emb.add_field(name="Container", value=f"`{v['container_name']}`", inline=True)
+        emb.add_field(name="Status", value=f"**{status}**", inline=True)
+        emb.add_field(name="📦 Allocated Resources", value=v['config'], inline=False)
+        emb.add_field(name="RAM", value=v['ram'], inline=True)
+        emb.add_field(name="CPU", value=v['cpu'] + " Cores", inline=True)
+        emb.add_field(name="Storage", value=v['storage'], inline=True)
+        emb.add_field(name="OS", value=v['os_version'], inline=True)
+        emb.add_field(name="Created", value=v['created_at'][:10], inline=True)
+        emb.add_field(name="🎮 Controls", value="Use the buttons below to manage your VPS", inline=False)
+        
+        return emb
+    
+    async def on_action(self, inter: discord.Interaction, action: str):
+        if str(inter.user.id) != self.owner_id:
+            await inter.response.send_message(embed=err("Not yours"), ephemeral=True)
+            return
+        
+        v = self.vps_list[self.idx]
+        container = v["container_name"]
+        
+        await inter.response.defer(ephemeral=True)
+        
+        try:
+            if action == "start":
+                await safe_start(container)
+                conn = get_db()
+                conn.execute("UPDATE vps SET status='running' WHERE container_name=?", (container,))
+                conn.commit()
+                conn.close()
+                v["status"] = "running"
+                await inter.followup.send(embed=ok("Started", f"`{container}` is running"), ephemeral=True)
+            
+            elif action == "stop":
+                await run_lxc(f"stop {container}")
+                conn = get_db()
+                conn.execute("UPDATE vps SET status='stopped' WHERE container_name=?", (container,))
+                conn.commit()
+                conn.close()
+                v["status"] = "stopped"
+                await inter.followup.send(embed=ok("Stopped", f"`{container}` is stopped"), ephemeral=True)
+            
+            elif action == "pass":
+                new_pass = generate_password()
+                await run_lxc(f"exec {container} -- bash -c \"echo 'root:{new_pass}' | chpasswd\"")
+                conn = get_db()
+                conn.execute("UPDATE vps SET root_password=? WHERE container_name=?", (new_pass, container))
+                conn.commit()
+                conn.close()
+                v["root_password"] = new_pass
+                
+                dm_emb = ok("Password Changed", container)
+                dm_emb.add_field(name="New Password", value=f"```{new_pass}```", inline=False)
+                try:
+                    await inter.user.send(embed=dm_emb)
+                    await inter.followup.send(embed=ok("Changed", "Check your DMs for new password"), ephemeral=True)
+                except:
+                    await inter.followup.send(embed=ok("New Password", f"```{new_pass}```"), ephemeral=True)
+            
+            elif action == "stats":
+                try:
+                    out = await run_lxc(f"info {container}")
+                    status_line = next((l for l in out.splitlines() if "Status:" in l), "Status: unknown")
+                    await inter.followup.send(embed=info("Stats", f"`{container}`\n{status_line}"), ephemeral=True)
+                except Exception as e:
+                    await inter.followup.send(embed=err("Stats", "Could not retrieve stats"), ephemeral=True)
+            
+            elif action == "reinstall":
+                await inter.followup.send(embed=warn("Reinstall", "Feature coming soon"), ephemeral=True)
+            
+            emb = self.build_embed()
+            await inter.message.edit(embed=emb, view=self)
+        
+        except Exception as e:
+            log.error(f"Action {action} failed: {e}")
+            await inter.followup.send(embed=err("Failed", str(e)[:400]), ephemeral=True)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # COMMANDS - USER
@@ -304,9 +520,10 @@ async def cmd_myvps(ctx):
         status = "⛔ SUSPENDED" if v["suspended"] else ("🟢 RUNNING" if v["status"] == "running" else "🔴 STOPPED")
         emb.add_field(
             name=f"#{i} · `{v['container_name']}`",
-            value=f"{status}\n`{v['config']}`",
+            value=f"{status}\n{v['config']}\nOS: {v['os_version']}",
             inline=False
         )
+    emb.add_field(name="Manage", value=f"Use `{PREFIX}manage` to control your VPS", inline=False)
     await ctx.send(embed=emb)
 
 @bot.command(name="manage")
@@ -323,15 +540,14 @@ async def cmd_manage(ctx, user: discord.Member = None):
         await ctx.send(embed=err("No VPS", "No VPS found."))
         return
     
-    emb = info("Manage VPS", f"**{len(vps_list)}** container(s)")
-    for i, v in enumerate(vps_list, 1):
-        status = "⛔" if v["suspended"] else ("🟢" if v["status"] == "running" else "🔴")
-        emb.add_field(
-            name=f"{status} #{i} `{v['container_name']}`",
-            value=f"{v['config']}\nOS: {v['os_version']}",
-            inline=False
-        )
-    await ctx.send(embed=emb)
+    view = ManageView(str(ctx.author.id), vps_list)
+    
+    if len(vps_list) == 1:
+        emb = view.build_embed()
+    else:
+        emb = info("Select VPS", "Choose a VPS from the dropdown")
+    
+    await ctx.send(embed=emb, view=view)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # COMMANDS - ADMIN
@@ -339,84 +555,23 @@ async def cmd_manage(ctx, user: discord.Member = None):
 @bot.command(name="create")
 @admin_only()
 async def cmd_create(ctx, ram: int, cpu: int, disk: int, user: discord.Member):
-    """Create a VPS: !create 4 2 20 @user"""
+    """Create VPS: !create 4 2 20 @user"""
     if ram < 1 or cpu < 1 or disk < 1:
         await ctx.send(embed=err("Invalid", "RAM/CPU/Disk must be ≥ 1"))
         return
     
-    msg = await ctx.send(embed=info("Creating…", f"Deploying VPS for {user.mention}…"))
-    
-    user_id = str(user.id)
-    count = len(get_user_vps(user_id)) + 1
-    container = f"vps-{user_id[-6:]}-{count}"
-    
-    try:
-        log.info(f"[CREATE] {container} for {user} ({user_id})")
-        
-        # Create container
-        await run_lxc(f"init ubuntu:22.04 {container} -s {DEFAULT_POOL}", timeout=180)
-        log.info(f"[CREATE] Container created: {container}")
-        
-        # Configure resources
-        await run_lxc(f"config set {container} limits.memory {ram*1024}MB")
-        await run_lxc(f"config set {container} limits.cpu {cpu}")
-        await run_lxc(f"config device set {container} root size={disk}GB")
-        log.info(f"[CREATE] Resources set: {ram}GB RAM, {cpu} CPU, {disk}GB disk")
-        
-        # Start container
-        await safe_start(container)
-        await asyncio.sleep(5)
-        log.info(f"[CREATE] Container started")
-        
-        # Setup SSH
-        password = await setup_ssh(container)
-        
-        # Save to DB
-        vps = {
-            "user_id": user_id,
-            "container_name": container,
-            "ram": f"{ram}GB",
-            "cpu": str(cpu),
-            "storage": f"{disk}GB",
-            "config": f"{ram}GB RAM / {cpu} CPU / {disk}GB disk",
-            "os_version": "ubuntu:22.04",
-            "status": "running",
-            "root_password": password,
-        }
-        save_vps(vps)
-        log.info(f"[CREATE] VPS saved to DB")
-        
-        # Notify
-        emb = ok("VPS Created", f"Container: `{container}`")
-        emb.add_field(name="Resources", value=vps["config"], inline=True)
-        emb.add_field(name="Password", value=f"`{password}`", inline=True)
-        emb.add_field(name="Start VPS", value=f"`{PREFIX}manage` then Start", inline=False)
-        
-        await msg.edit(embed=emb)
-        
-        # DM user
-        try:
-            await user.send(embed=ok("Your VPS Ready!", f"Container: `{container}`\nPassword: `{password}`"))
-        except:
-            pass
-        
-    except Exception as e:
-        log.error(f"[CREATE] Failed: {e}")
-        await msg.edit(embed=err("Create Failed", str(e)[:400]))
+    emb = info("Choose OS", f"Creating {ram}GB / {cpu} CPU / {disk}GB for {user.mention}")
+    await ctx.send(embed=emb, view=OSSelect(ram, cpu, disk, user, ctx))
 
 @bot.command(name="start")
 @admin_only()
 async def cmd_start(ctx, container: str):
-    """Start a container: !start vps-abc-1"""
     try:
         await safe_start(container)
-        
-        # Update DB
         conn = get_db()
         conn.execute("UPDATE vps SET status='running' WHERE container_name=?", (container,))
         conn.commit()
         conn.close()
-        
         await ctx.send(embed=ok("Started", f"`{container}` is running"))
     except Exception as e:
         await ctx.send(embed=err("Failed", str(e)))
@@ -424,15 +579,12 @@ async def cmd_start(ctx, container: str):
 @bot.command(name="stop")
 @admin_only()
 async def cmd_stop(ctx, container: str):
-    """Stop a container: !stop vps-abc-1"""
     try:
         await run_lxc(f"stop {container}")
-        
         conn = get_db()
         conn.execute("UPDATE vps SET status='stopped' WHERE container_name=?", (container,))
         conn.commit()
         conn.close()
-        
         await ctx.send(embed=ok("Stopped", f"`{container}` stopped"))
     except Exception as e:
         await ctx.send(embed=err("Failed", str(e)))
@@ -440,15 +592,12 @@ async def cmd_stop(ctx, container: str):
 @bot.command(name="delete")
 @admin_only()
 async def cmd_delete(ctx, container: str):
-    """Delete a container: !delete vps-abc-1"""
     try:
         await run_lxc(f"delete {container} --force")
-        
         conn = get_db()
         conn.execute("DELETE FROM vps WHERE container_name=?", (container,))
         conn.commit()
         conn.close()
-        
         await ctx.send(embed=ok("Deleted", f"`{container}` removed"))
     except Exception as e:
         await ctx.send(embed=err("Failed", str(e)))
@@ -456,7 +605,6 @@ async def cmd_delete(ctx, container: str):
 @bot.command(name="list-all")
 @admin_only()
 async def cmd_list_all(ctx):
-    """List all VPS"""
     conn = get_db()
     rows = conn.execute("SELECT * FROM vps ORDER BY user_id").fetchall()
     conn.close()
@@ -494,7 +642,7 @@ async def cmd_help(ctx):
     emb.add_field(name="User", value=(
         f"`{PREFIX}ping` – check bot\n"
         f"`{PREFIX}myvps` – list your VPS\n"
-        f"`{PREFIX}manage` – view VPS"
+        f"`{PREFIX}manage` – manage your VPS"
     ), inline=False)
     
     if is_admin(str(ctx.author.id)):
